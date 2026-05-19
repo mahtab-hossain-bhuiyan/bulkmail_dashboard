@@ -5,24 +5,44 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 
 $senderEmail = Auth::user()?->sender_email;
-$demoMode = empty($senderEmail);
+$domain = Auth::user()?->sender_email;
+
+// Extract domain part for matching
+$domainPart = $senderEmail ? substr(strrchr($senderEmail, '@'), 1) : null;
 
 // Get filters
-$filter = request('filter', '30days');
+$filter = request('filter', 'all');
+$statusFilter = request('status', 'all');
 $search = request('search', '');
-$startDate = Carbon::now();
-$endDate = Carbon::now();
+$startDate = request('start_date');
+$endDate = request('end_date');
 
-if ($filter === '30days') {
-    $startDate = $startDate->subDays(30);
+// Custom date range
+if ($startDate && $endDate) {
+    $startDate = Carbon::parse($startDate);
+    $endDate = Carbon::parse($endDate);
+    $filter = 'custom';
+} elseif ($filter === 'today') {
+    $startDate = Carbon::today();
+    $endDate = Carbon::now();
+} elseif ($filter === '7days') {
+    $startDate = Carbon::now()->subDays(7);
+    $endDate = Carbon::now();
+} elseif ($filter === '30days') {
+    $startDate = Carbon::now()->subDays(30);
+    $endDate = Carbon::now();
 } else {
-    $startDate = $startDate->subYears(10);
+    // "All Time" - don't filter by date, just use a very old start date
+    $startDate = Carbon::create(2020, 1, 1);
+    $endDate = null;
 }
 
-// Build query
+// Build query - match by domain part
 $query = MailLog::query()
-    ->when(!$demoMode, fn($q) => $q->where('sender', $senderEmail))
-    ->whereBetween('mail_at', [$startDate, $endDate]);
+    ->when($domainPart, fn($q) => $q->where('sender', 'ilike', "%{$domainPart}%"))  // Match by domain
+    ->when($startDate, fn($q) => $q->where('mail_at', '>=', $startDate))
+    ->when($endDate, fn($q) => $q->where('mail_at', '<=', $endDate))
+    ->when($statusFilter !== 'all' && $statusFilter, fn($q) => $q->where('status', $statusFilter));
 
 // Search filter
 if ($search) {
@@ -47,21 +67,6 @@ $total = (int) $stats->total;
 $sent = (int) $stats->sent;
 $successRate = $total > 0 ? round(($sent / $total) * 100, 1) : 0;
 
-// Get daily data for chart
-$dailyData = (clone $query)->clone()
-    ->selectRaw("DATE(mail_at) as date, COUNT(*) as count")
-    ->groupBy('date')
-    ->orderBy('date')
-    ->limit(30)
-    ->get();
-
-// Get status breakdown
-$statusBreakdown = (clone $query)->clone()
-    ->selectRaw('status, COUNT(*) as count')
-    ->groupBy('status')
-    ->get()
-    ->pluck('count', 'status');
-
 // Get logs with pagination
 $logs = $query->orderBy('mail_at', 'desc')->paginate(25);
 ?>
@@ -75,18 +80,17 @@ $logs = $query->orderBy('mail_at', 'desc')->paginate(25);
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f3f4f6; }
-
-        .container { max-width: 90rem; margin: 0 auto; padding: 2rem 1rem; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
-        h1 { font-size: 1.5rem; font-weight: 600; color: #111827; }
-
-        .controls { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
-        .btn { background: #1f2937; color: white; padding: 0.5rem 1rem; border-radius: 0.25rem; text-decoration: none; font-size: 0.875rem; border: none; cursor: pointer; }
-        .btn:hover { background: #374151; }
+        .container { max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem; }
+        .header h1 { font-size: 1.5rem; }
+        .nav-btn { background: #1f2937; color: white; padding: 0.5rem 1rem; border-radius: 0.25rem; text-decoration: none; font-size: 0.875rem; }
+        .btn-admin { background: #7c3aed; }
         .btn-danger { background: #dc2626; }
-        .btn-danger:hover { background: #b91c1c; }
-        select, input { padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 0.25rem; font-size: 0.875rem; }
-        input { width: 250px; }
+
+        .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+        .controls select, .controls input { padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 0.25rem; font-size: 0.875rem; }
+        .btn { background: #1f2937; color: white; padding: 0.5rem 1rem; border-radius: 0.25rem; border: none; font-size: 0.875rem; cursor: pointer; }
+        .btn:hover { background: #374151; }
 
         .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
         .card { background: white; padding: 1.5rem; border-radius: 0.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
@@ -96,40 +100,26 @@ $logs = $query->orderBy('mail_at', 'desc')->paginate(25);
         .text-yellow { color: #ca8a04; }
         .text-red { color: #dc2626; }
 
-        .charts-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
-        .chart-card { background: white; padding: 1.5rem; border-radius: 0.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .chart-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; }
-        .bar-chart { display: flex; align-items: flex-end; gap: 2px; height: 150px; padding-top: 1rem; }
-        .bar { background: #3b82f6; flex: 1; min-height: 2px; border-radius: 2px 2px 0 0; }
-        .pie-chart { width: 150px; height: 150px; border-radius: 50%; background: conic-gradient(#22c55e 0% 64%, #eab308 64% 75%, #ef4444 75% 88%, #dc2626 88% 100%); margin: 0 auto; }
-        .legend { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; font-size: 0.75rem; }
-        .legend-item { display: flex; align-items: center; gap: 0.25rem; }
-        .legend-color { width: 12px; height: 12px; border-radius: 2px; }
-
         .table-card { background: white; padding: 1.5rem; border-radius: 0.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+        .table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem; }
         .table-header h3 { font-size: 1.125rem; font-weight: 600; }
-        table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; padding: 0.75rem; background: #f9fafb; border-bottom: 1px solid #e5e7eb; font-size: 0.75rem; color: #6b7280; text-transform: uppercase; }
-        td { padding: 0.75rem; border-bottom: 1px solid #e5e7eb; font-size: 0.875rem; }
+
+        table { width: 100%; border-collapse: collapse; overflow-x: auto; display: block; }
+        th { text-align: left; padding: 0.75rem; background: #f9fafb; border-bottom: 1px solid #e5e7eb; font-size: 0.75rem; color: #6b7280; text-transform: uppercase; white-space: nowrap; }
+        td { padding: 0.75rem; border-bottom: 1px solid #e5e7eb; font-size: 0.875rem; white-space: nowrap; }
+
         .badge { display: inline-block; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem; font-weight: 500; }
         .badge-sent { background: #dcfce7; color: #166534; }
         .badge-deferred { background: #fef9c3; color: #854d0e; }
         .badge-bounced { background: #fee2e2; color: #991b1b; }
         .badge-failed { background: #fecaca; color: #7f1d1d; }
-        .smtp-text { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-        .pagination { display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; font-size: 0.875rem; color: #6b7280; }
+        .pagination { display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; font-size: 0.875rem; color: #6b7280; flex-wrap: wrap; gap: 1rem; }
         .pagination a { color: #3b82f6; text-decoration: none; }
         .pagination a:hover { text-decoration: underline; }
 
-        .empty { text-align: center; padding: 2rem; color: #6b7280; }
-
         @media (max-width: 768px) {
             .grid { grid-template-columns: repeat(2, 1fr); }
-            .charts-grid { grid-template-columns: 1fr; }
-            .controls { flex-direction: column; align-items: stretch; }
-            input { width: 100%; }
         }
     </style>
 </head>
@@ -138,19 +128,40 @@ $logs = $query->orderBy('mail_at', 'desc')->paginate(25);
         <div class="header">
             <h1>BulkMail Dashboard</h1>
             <div class="controls">
-                <form method="get" style="display:inline;">
-                    <select name="filter" onchange="this.form.submit()">
-                        <option value="30days" {{ $filter === '30days' ? 'selected' : '' }}>Last 30 Days</option>
-                        <option value="all" {{ $filter === 'all' ? 'selected' : '' }}>All Time</option>
-                    </select>
-                </form>
-                <a href="/dashboard" class="btn">Refresh</a>
-                <a href="/profile" class="btn">Profile</a>
+                @if(Auth::user()?->is_admin)
+                <a href="/admin" class="nav-btn btn-admin">Admin Panel</a>
+                @endif
+                <a href="/dashboard?filter=all" class="btn">Refresh</a>
+                <a href="/profile" class="nav-btn">Profile</a>
                 <form method="post" action="/logout" style="display:inline;">
                     @csrf
-                    <button type="submit" class="btn btn-danger">Logout</button>
+                    <button type="submit" class="nav-btn btn-danger">Logout</button>
                 </form>
             </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="card" style="margin-bottom:1.5rem;">
+            <form method="get" class="controls">
+                <select name="filter">
+                    <option value="all" {{ $filter === 'all' ? 'selected' : '' }}>All Time</option>
+                    <option value="today" {{ $filter === 'today' ? 'selected' : '' }}>Today</option>
+                    <option value="7days" {{ $filter === '7days' ? 'selected' : '' }}>Last 7 Days</option>
+                    <option value="30days" {{ $filter === '30days' ? 'selected' : '' }}>Last 30 Days</option>
+                    <option value="custom">Custom Range</option>
+                </select>
+                <select name="status">
+                    <option value="all" {{ $statusFilter === 'all' ? 'selected' : '' }}>All Status</option>
+                    <option value="sent" {{ $statusFilter === 'sent' ? 'selected' : '' }}>Sent</option>
+                    <option value="deferred" {{ $statusFilter === 'deferred' ? 'selected' : '' }}>Deferred</option>
+                    <option value="bounced" {{ $statusFilter === 'bounced' ? 'selected' : '' }}>Bounced</option>
+                    <option value="failed" {{ $statusFilter === 'failed' ? 'selected' : '' }}>Failed</option>
+                </select>
+                <input type="date" name="start_date" value="{{ request('start_date') }}">
+                <input type="date" name="end_date" value="{{ request('end_date') }}">
+                <input type="text" name="search" placeholder="Search recipient..." value="{{ $search }}">
+                <button type="submit" class="btn">Apply Filters</button>
+            </form>
         </div>
 
         <!-- Stats Cards -->
@@ -173,64 +184,21 @@ $logs = $query->orderBy('mail_at', 'desc')->paginate(25);
             </div>
         </div>
 
-        <!-- Charts -->
-        <div class="charts-grid">
-            <div class="chart-card">
-                <h3>Mail Volume Over Time</h3>
-                <?php
-                $maxCount = $dailyData->max('count') ?: 1;
-                $totalDays = $dailyData->count();
-                ?>
-                <div class="bar-chart">
-                    @foreach($dailyData as $day)
-                    <?php $height = $maxCount > 0 ? round(($day->count / $maxCount) * 100) : 0; ?>
-                    <div class="bar" style="height: {{ $height }}%; background: #3b82f6;" title="{{ $day->date }}: {{ $day->count }}"></div>
-                    @endforeach
-                </div>
-                @if($dailyData->isEmpty())
-                <div class="empty">No data for chart</div>
-                @endif
-            </div>
-            <div class="chart-card">
-                <h3>Status Breakdown</h3>
-                <?php
-                $sentPct = $total > 0 ? round(($statusBreakdown['sent'] ?? 0) / $total * 100) : 0;
-                $deferredPct = $total > 0 ? round(($statusBreakdown['deferred'] ?? 0) / $total * 100) : 0;
-                $bouncedPct = $total > 0 ? round(($statusBreakdown['bounced'] ?? 0) / $total * 100) : 0;
-                $failedPct = $total > 0 ? round(($statusBreakdown['failed'] ?? 0) / $total * 100) : 0;
-                ?>
-                <div class="pie-chart"></div>
-                <div class="legend">
-                    <div class="legend-item"><div class="legend-color" style="background: #22c55e;"></div> Sent ({{ $sentPct }}%)</div>
-                    <div class="legend-item"><div class="legend-color" style="background: #eab308;"></div> Deferred ({{ $deferredPct }}%)</div>
-                    <div class="legend-item"><div class="legend-color" style="background: #ef4444;"></div> Bounced ({{ $bouncedPct }}%)</div>
-                    <div class="legend-item"><div class="legend-color" style="background: #dc2626;"></div> Failed ({{ $failedPct }}%)</div>
-                </div>
-            </div>
-        </div>
-
         <!-- Data Table -->
         <div class="table-card">
             <div class="table-header">
-                <h3>Recent Mail Logs</h3>
-                <form method="get">
-                    <input type="text" name="search" placeholder="Search recipient or subject..." value="{{ $search }}">
-                    <button type="submit" class="btn">Search</button>
-                    @if($search)
-                    <a href="/dashboard?filter={{ $filter }}" class="btn" style="background: #6b7280;">Clear</a>
-                    @endif
-                </form>
+                <h3>Recent Mail Logs ({{ number_format($logs->total()) }} total)</h3>
             </div>
 
             @if($logs->isEmpty())
-            <div class="empty">No data found</div>
+            <div style="text-align:center;padding:2rem;color:#6b7280;">No data found</div>
             @else
                 <table>
                     <thead>
                         <tr>
                             <th>Date/Time</th>
+                            <th>Queue ID</th>
                             <th>Recipient</th>
-                            <th>Subject</th>
                             <th>Status</th>
                             <th>SMTP Response</th>
                         </tr>
@@ -239,15 +207,15 @@ $logs = $query->orderBy('mail_at', 'desc')->paginate(25);
                         @foreach($logs as $log)
                         <tr>
                             <td>{{ $log->mail_at->format('Y-m-d H:i:s') }}</td>
+                            <td style="font-family:monospace;font-size:0.75rem;">{{ $log->message_id ?: '-' }}</td>
                             <td>{{ $log->recipient }}</td>
-                            <td>{{ $log->subject ?: '-' }}</td>
                             <td>
                                 <span class="badge badge-{{ $log->status }}">
                                     {{ $log->status }}
                                 </span>
                             </td>
-                            <td class="smtp-text" title="{{ $log->smtp_response }}">
-                                {{ $log->smtp_response ?: '-' }}
+                            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">
+                                {{ Str::limit($log->smtp_response, 50) }}
                             </td>
                         </tr>
                         @endforeach
@@ -255,13 +223,13 @@ $logs = $query->orderBy('mail_at', 'desc')->paginate(25);
                 </table>
 
                 <div class="pagination">
-                    <span>Showing {{ $logs->firstItem() }} - {{ $logs->lastItem() }} of {{ $logs->total() }} results</span>
+                    <span>Showing {{ $logs->firstItem() }} - {{ $logs->lastItem() }}</span>
                     <div>
                         @if($logs->previousPageUrl())
-                        <a href="{{ $logs->previousPageUrl() }}&search={{ $search }}&filter={{ $filter }}">&laquo; Previous</a>
+                        <a href="{{ $logs->previousPageUrl() }}&filter={{ $filter }}&status={{ $statusFilter }}&search={{ $search }}&start_date={{ request('start_date') }}&end_date={{ request('end_date') }}">&laquo; Previous</a>
                         @endif
                         @if($logs->nextPageUrl())
-                        <a href="{{ $logs->nextPageUrl() }}&search={{ $search }}&filter={{ $filter }}" style="margin-left: 1rem;">Next &raquo;</a>
+                        <a href="{{ $logs->nextPageUrl() }}&filter={{ $filter }}&status={{ $statusFilter }}&search={{ $search }}&start_date={{ request('start_date') }}&end_date={{ request('end_date') }}">Next &raquo;</a>
                         @endif
                     </div>
                 </div>

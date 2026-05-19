@@ -25,7 +25,7 @@ class MailLog extends Model
 
     public function scopeForUser($query, string $senderEmail)
     {
-        return $query->where('sender', $senderEmail);
+        return $query->where('sender', $senderEmail);  // Exact match
     }
 
     public function scopeDateRange($query, ?string $start, ?string $end)

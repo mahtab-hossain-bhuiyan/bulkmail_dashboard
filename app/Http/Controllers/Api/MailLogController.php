@@ -28,7 +28,7 @@ class MailLogController extends Controller
         $demoMode = empty($senderEmail);
 
         $query = MailLog::query()
-            ->when(!$demoMode, fn($q) => $q->forUser($senderEmail))
+            ->when(!$demoMode, fn($q) => $q->where('sender', $senderEmail))  // Exact match
             ->when($request->start_date, fn($q) => $q->dateRange($request->start_date, $request->end_date))
             ->when($request->status && $request->status !== 'all', fn($q) => $q->status($request->status))
             ->when($request->search, fn($q, $search) => $q->where(function($query) use ($search) {
@@ -60,7 +60,7 @@ class MailLogController extends Controller
         $demoMode = empty($senderEmail);
 
         $query = MailLog::query()
-            ->when(!$demoMode, fn($q) => $q->forUser($senderEmail))
+            ->when(!$demoMode, fn($q) => $q->where('sender', $senderEmail))  // Exact match
             ->when($request->start_date, fn($q) => $q->dateRange($request->start_date, $request->end_date));
 
         $stats = $query->clone()
@@ -102,7 +102,7 @@ class MailLogController extends Controller
             : Carbon::now();
 
         $query = MailLog::query()
-            ->when(!$demoMode, fn($q) => $q->forUser($senderEmail))
+            ->when(!$demoMode, fn($q) => $q->where('sender', $senderEmail))  // Exact match
             ->whereBetween('mail_at', [$startDate, $endDate]);
 
         // Daily breakdown
